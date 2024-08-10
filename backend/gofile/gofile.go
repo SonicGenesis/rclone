@@ -93,6 +93,11 @@ Leave this blank normally, rclone will fill it in automatically.
 			Advanced:  true,
 			Sensitive: true,
 		}, {
+			Name:     "list_chunk",
+			Help:     `Number of items to list in each call`,
+			Default:  1000,
+			Advanced: true,
+		}, {
 			Name:     config.ConfigEncoding,
 			Help:     config.ConfigEncodingHelp,
 			Advanced: true,
@@ -117,6 +122,7 @@ type Options struct {
 	AccessToken  string               `config:"access_token"`
 	RootFolderID string               `config:"root_folder_id"`
 	AccountID    string               `config:"account_id"`
+	ListChunk    int                  `config:"list_chunk"`
 	Enc          encoder.MultiEncoder `config:"encoding"`
 }
 
@@ -250,6 +256,10 @@ func (f *Fs) readMetaDataForID(ctx context.Context, id string) (info *api.Item, 
 	opts := rest.Opts{
 		Method: "GET",
 		Path:   "/contents/" + id,
+		Parameters: url.Values{
+			"page":     {"1"},
+			"pageSize": {"1"}, // not interested in children so just ask for 1
+		},
 	}
 	var result api.Contents
 	err = f.pacer.Call(func() (bool, error) {
@@ -621,40 +631,49 @@ func (f *Fs) listAll(ctx context.Context, dirID string, directoriesOnly bool, fi
 	if name != "" {
 		opts.Parameters.Add("contentname", f.opt.Enc.FromStandardName(name))
 	}
-	var result api.Contents
-	var resp *http.Response
-	err = f.pacer.Call(func() (bool, error) {
-		resp, err = f.srv.CallJSON(ctx, &opts, nil, &result)
-		return shouldRetry(ctx, resp, err)
-	})
-	if err = result.Err(err); err != nil {
-		if isAPIErr(err, "error-notFound") {
-			return found, fs.ErrorDirNotFound
-		}
-		return found, fmt.Errorf("couldn't list files: %w", err)
-	}
+	page := 1
 OUTER:
-	for id, item := range result.Data.Children {
-		_ = id
-		if item.Type == api.ItemTypeFolder {
-			if filesOnly {
+	for {
+		opts.Parameters.Set("page", strconv.Itoa(page))
+		opts.Parameters.Set("pageSize", strconv.Itoa(f.opt.ListChunk))
+		var result api.Contents
+		var resp *http.Response
+		err = f.pacer.Call(func() (bool, error) {
+			resp, err = f.srv.CallJSON(ctx, &opts, nil, &result)
+			return shouldRetry(ctx, resp, err)
+		})
+		if err = result.Err(err); err != nil {
+			if isAPIErr(err, "error-notFound") {
+				return found, fs.ErrorDirNotFound
+			}
+			return found, fmt.Errorf("couldn't list files: %w", err)
+		}
+		for id, item := range result.Data.Children {
+			_ = id
+			if item.Type == api.ItemTypeFolder {
+				if filesOnly {
+					continue
+				}
+			} else if item.Type == api.ItemTypeFile {
+				if directoriesOnly {
+					continue
+				}
+			} else {
+				fs.Debugf(f, "Ignoring %q - unknown type %q", item.Name, item.Type)
 				continue
 			}
-		} else if item.Type == api.ItemTypeFile {
-			if directoriesOnly {
-				continue
+			item.Name = f.opt.Enc.ToStandardName(item.Name)
+			if fn(item) {
+				found = true
+				break OUTER
 			}
-		} else {
-			fs.Debugf(f, "Ignoring %q - unknown type %q", item.Name, item.Type)
-			continue
 		}
-		item.Name = f.opt.Enc.ToStandardName(item.Name)
-		if fn(item) {
-			found = true
-			break OUTER
+		if !result.Metadata.HasNextPage {
+			break
 		}
+		page += 1
 	}
-	return
+	return found, err
 }
 
 // Convert a list item into a DirEntry
@@ -725,50 +744,63 @@ func (f *Fs) listR(ctx context.Context, dir string, list *walk.ListRHelper) (err
 		Path:       "/contents/" + directoryID,
 		Parameters: url.Values{"maxdepth": {strconv.Itoa(maxDepth)}},
 	}
-	var result api.Contents
-	var resp *http.Response
-	err = f.pacer.Call(func() (bool, error) {
-		resp, err = f.srv.CallJSON(ctx, &opts, nil, &result)
-		return shouldRetry(ctx, resp, err)
-	})
-	if err = result.Err(err); err != nil {
-		if isAPIErr(err, "error-notFound") {
-			return fs.ErrorDirNotFound
+	page := 1
+	for {
+		opts.Parameters.Set("page", strconv.Itoa(page))
+		opts.Parameters.Set("pageSize", strconv.Itoa(f.opt.ListChunk))
+		var result api.Contents
+		var resp *http.Response
+		err = f.pacer.Call(func() (bool, error) {
+			resp, err = f.srv.CallJSON(ctx, &opts, nil, &result)
+			return shouldRetry(ctx, resp, err)
+		})
+		if err = result.Err(err); err != nil {
+			if isAPIErr(err, "error-notFound") {
+				return fs.ErrorDirNotFound
+			}
+			return fmt.Errorf("couldn't recursively list files: %w", err)
 		}
-		return fmt.Errorf("couldn't recursively list files: %w", err)
-	}
-	// Result.Data.Item now contains a recursive listing so we will have to decode recursively
-	var decode func(string, *api.Item) error
-	decode = func(dir string, dirItem *api.Item) error {
-		// If we have ChildrenCount but no Children this means the recursion stopped here
-		if dirItem.ChildrenCount > 0 && len(dirItem.Children) == 0 {
-			return f.listR(ctx, dir, list)
-		}
-		for _, item := range dirItem.Children {
-			if item.Type != api.ItemTypeFolder && item.Type != api.ItemTypeFile {
-				fs.Debugf(f, "Ignoring %q - unknown type %q", item.Name, item.Type)
-				continue
+		// Result.Data.Item now contains a recursive listing so we will have to decode recursively
+		var decode func(string, *api.Item) error
+		decode = func(dir string, dirItem *api.Item) error {
+			// If we have ChildrenCount but no Children this means the recursion stopped here
+			if dirItem.ChildrenCount > 0 && len(dirItem.Children) == 0 {
+				return f.listR(ctx, dir, list)
 			}
-			item.Name = f.opt.Enc.ToStandardName(item.Name)
-			remote := path.Join(dir, item.Name)
-			entry, err := f.itemToDirEntry(ctx, remote, item)
-			if err != nil {
-				return err
-			}
-			err = list.Add(entry)
-			if err != nil {
-				return err
-			}
-			if item.Type == api.ItemTypeFolder {
-				err := decode(remote, item)
+			for _, item := range dirItem.Children {
+				if item.Type != api.ItemTypeFolder && item.Type != api.ItemTypeFile {
+					fs.Debugf(f, "Ignoring %q - unknown type %q", item.Name, item.Type)
+					continue
+				}
+				item.Name = f.opt.Enc.ToStandardName(item.Name)
+				remote := path.Join(dir, item.Name)
+				entry, err := f.itemToDirEntry(ctx, remote, item)
 				if err != nil {
 					return err
 				}
+				err = list.Add(entry)
+				if err != nil {
+					return err
+				}
+				if item.Type == api.ItemTypeFolder {
+					err := decode(remote, item)
+					if err != nil {
+						return err
+					}
+				}
 			}
+			return nil
 		}
-		return nil
+		err = decode(dir, &result.Data.Item)
+		if err != nil {
+			return err
+		}
+		if !result.Metadata.HasNextPage {
+			break
+		}
+		page += 1
 	}
-	return decode(dir, &result.Data.Item)
+	return err
 }
 
 // ListR lists the objects and directories of the Fs starting

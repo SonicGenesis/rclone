@@ -121,6 +121,16 @@ type Contents struct {
 	Data struct {
 		Item
 	} `json:"data"`
+	Metadata Metadata `json:"metadata"`
+}
+
+// Metadata is returned when paging is in use
+type Metadata struct {
+	TotalCount  int  `json:"totalCount"`
+	TotalPages  int  `json:"totalPages"`
+	Page        int  `json:"page"`
+	PageSize    int  `json:"pageSize"`
+	HasNextPage bool `json:"hasNextPage"`
 }
 
 // AccountsGetID is the result of /accounts/getid
