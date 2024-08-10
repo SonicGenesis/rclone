@@ -71,25 +71,26 @@ const (
 
 // Item describes a folder or a file as returned by /contents
 type Item struct {
-	ID           string                 `json:"id"`
-	ParentFolder string                 `json:"parentFolder"`
-	Type         string                 `json:"type"`
-	Name         string                 `json:"name"`
-	Size         int64                  `json:"size"`
-	Code         string                 `json:"code"`
-	CreateTime   int64                  `json:"createTime"`
-	ModTime      int64                  `json:"modTime"`
-	Link         string                 `json:"link"`
-	MD5          string                 `json:"md5"`
-	MimeType     string                 `json:"mimetype"`
-	ChildrenIDs  []string               `json:"childrenIds"`
-	DirectLinks  map[string]*DirectLink `json:"directLinks"`
+	ID            string                 `json:"id"`
+	ParentFolder  string                 `json:"parentFolder"`
+	Type          string                 `json:"type"`
+	Name          string                 `json:"name"`
+	Size          int64                  `json:"size"`
+	Code          string                 `json:"code"`
+	CreateTime    int64                  `json:"createTime"`
+	ModTime       int64                  `json:"modTime"`
+	Link          string                 `json:"link"`
+	MD5           string                 `json:"md5"`
+	MimeType      string                 `json:"mimetype"`
+	ChildrenCount int                    `json:"childrenCount"`
+	DirectLinks   map[string]*DirectLink `json:"directLinks"`
 	//Public         bool     `json:"public"`
 	//ServerSelected string   `json:"serverSelected"`
 	//Thumbnail      string   `json:"thumbnail"`
 	//DownloadCount int      `json:"downloadCount"`
 	//TotalDownloadCount int64            `json:"totalDownloadCount"`
 	//TotalSize int64            `json:"totalSize"`
+	//ChildrenIDs   []string               `json:"childrenIds"`
 	Children map[string]*Item `json:"children"`
 }
 

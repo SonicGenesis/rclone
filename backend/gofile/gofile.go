@@ -667,7 +667,7 @@ func (f *Fs) itemToDirEntry(ctx context.Context, remote string, info *api.Item) 
 				fs:     f,
 				remote: remote,
 			},
-			items: int64(len(info.ChildrenIDs)),
+			items: int64(info.ChildrenCount),
 		}
 		d.setMetaDataAny(info)
 		entry = d
@@ -740,8 +740,8 @@ func (f *Fs) listR(ctx context.Context, dir string, list *walk.ListRHelper) (err
 	// Result.Data.Item now contains a recursive listing so we will have to decode recursively
 	var decode func(string, *api.Item) error
 	decode = func(dir string, dirItem *api.Item) error {
-		// If we have ChildrenIDs but no Children this means the recursion stopped here
-		if len(dirItem.ChildrenIDs) > 0 && len(dirItem.Children) == 0 {
+		// If we have ChildrenCount but no Children this means the recursion stopped here
+		if dirItem.ChildrenCount > 0 && len(dirItem.Children) == 0 {
 			return f.listR(ctx, dir, list)
 		}
 		for _, item := range dirItem.Children {
